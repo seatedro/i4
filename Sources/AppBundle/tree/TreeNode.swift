@@ -113,6 +113,8 @@ open class TreeNode: Equatable, AeroAny {
     }
 
     var mostRecentChild: TreeNode? { _mruChildren.mostRecent ?? children.last }
+    var mruChildren: [TreeNode] { Array(_mruChildren) }
+    var treeAdaptiveWeight: CGFloat { adaptiveWeight }
 
     @discardableResult
     func unbindFromParent() -> BindingData {

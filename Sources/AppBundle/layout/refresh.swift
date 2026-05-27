@@ -117,6 +117,7 @@ func refreshModel() {
     Workspace.garbageCollectUnusedWorkspaces()
     checkOnFocusChangedCallbacks()
     normalizeContainers()
+    TreeStore.shared.refreshFromMutableTree()
 }
 
 @MainActor

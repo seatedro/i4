@@ -1,6 +1,4 @@
-import AppKit
 import Common
-import Foundation
 
 struct BalanceSizesCommand: Command {
     let args: BalanceSizesCmdArgs
@@ -8,20 +6,11 @@ struct BalanceSizesCommand: Command {
 
     func run(_ env: CmdEnv, _ io: CmdIo) -> BinaryExitCode {
         guard let target = args.resolveTargetOrReportError(env, io) else { return .fail }
-        balance(target.workspace.rootTilingContainer)
-        return .succ
-    }
-}
-
-@MainActor
-private func balance(_ parent: TilingContainer) {
-    for child in parent.children {
-        switch parent.layout {
-            case .tiles: child.setWeight(parent.orientation, 1)
-            case .accordion: break // Do nothing
-        }
-        if let child = child as? TilingContainer {
-            balance(child)
-        }
+        TreeStore.shared.refreshFromMutableTree()
+        let state = TreeStore.shared.current
+        guard let workspace = state.workspace(named: target.workspace.name),
+              let nextState = state.balancingWorkspace(workspace.id)
+        else { return .fail }
+        return .from(bool: TreeStore.shared.commit(nextState))
     }
 }

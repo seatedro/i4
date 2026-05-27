@@ -72,6 +72,7 @@ private struct FrozenFocus: AeroAny, Equatable, Sendable {
     let status = newFocus.workspace.workspaceMonitor.setActiveWorkspace(newFocus.workspace)
 
     newFocus.windowOrNil?.markAsMostRecentChild()
+    TreeStore.shared.refreshFromMutableTree()
     return status
 }
 extension Window {

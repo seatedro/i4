@@ -24,20 +24,17 @@ struct SplitCommand: Command {
                     case .horizontal: .h
                     case .opposite: parent.orientation.opposite
                 }
-                if parent.children.count == 1 {
-                    parent.changeOrientation(orientation)
-                } else {
-                    let data = window.unbindFromParent()
-                    let newParent = TilingContainer(
-                        parent: parent,
-                        adaptiveWeight: data.adaptiveWeight,
-                        orientation,
-                        .tiles,
-                        index: data.index,
-                    )
-                    window.bind(to: newParent, adaptiveWeight: WEIGHT_AUTO, index: 0)
-                }
-                return .succ
+                TreeStore.shared.refreshFromMutableTree()
+                let state = TreeStore.shared.current
+                guard let windowState = state.windowNode(withWindowId: window.windowId),
+                      let nextState = state.splittingWindow(
+                          windowState.id,
+                          orientation: orientation,
+                          newContainerId: TreeStore.shared.allocateNodeId(),
+                          normalizeOppositeOrientationForNestedContainers: config.enableNormalizationOppositeOrientationForNestedContainers,
+                      )
+                else { return .fail }
+                return .from(bool: TreeStore.shared.commit(nextState))
             case .macosMinimizedWindowsContainer, .macosFullscreenWindowsContainer, .macosHiddenAppsWindowsContainer:
                 return .fail(io.err("Can't split macos fullscreen, minimized windows and windows of hidden apps. This behavior may change in the future"))
             case .macosPopupWindowsContainer:

@@ -7,11 +7,11 @@ struct FlattenWorkspaceTreeCommand: Command {
 
     func run(_ env: CmdEnv, _ io: CmdIo) -> BinaryExitCode {
         guard let target = args.resolveTargetOrReportError(env, io) else { return .fail }
-        let workspace = target.workspace
-        let windows = workspace.rootTilingContainer.allLeafWindowsRecursive
-        for window in windows {
-            window.bind(to: workspace.rootTilingContainer, adaptiveWeight: 1, index: INDEX_BIND_LAST)
-        }
-        return .succ
+        TreeStore.shared.refreshFromMutableTree()
+        let state = TreeStore.shared.current
+        guard let workspace = state.workspace(named: target.workspace.name),
+              let nextState = state.flatteningWorkspace(workspace.id)
+        else { return .fail }
+        return .from(bool: TreeStore.shared.commit(nextState))
     }
 }

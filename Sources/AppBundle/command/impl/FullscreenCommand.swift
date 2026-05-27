@@ -28,6 +28,7 @@ struct FullscreenCommand: Command {
 
         // Focus on its own workspace
         window.markAsMostRecentChild()
+        TreeStore.shared.refreshFromMutableTree()
         return .succ
     }
 }

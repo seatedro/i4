@@ -12,6 +12,7 @@ struct FocusCommand: Command {
         defer {
             if args.floatingAsTiling {
                 restoreFloatingWindows(floatingWindows: floatingWindows, workspace: target.workspace)
+                TreeStore.shared.refreshFromMutableTree()
             }
         }
 

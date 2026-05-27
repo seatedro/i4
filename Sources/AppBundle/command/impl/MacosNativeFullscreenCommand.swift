@@ -43,6 +43,7 @@ struct MacosNativeFullscreenCommand: Command {
                     try await window.relayoutWindow(on: workspace)
             }
         }
+        TreeStore.shared.refreshFromMutableTree()
         return .succ
     }
 }

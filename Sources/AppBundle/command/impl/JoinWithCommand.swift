@@ -11,22 +11,18 @@ struct JoinWithCommand: Command {
         guard let currentWindow = target.windowOrNil else {
             return .fail(io.err(noWindowIsFocused))
         }
-        guard let (parent, ownIndex) = currentWindow.closestParent(hasChildrenInDirection: direction, withLayout: nil) else {
+        guard currentWindow.closestParent(hasChildrenInDirection: direction, withLayout: nil) != nil else {
             return .fail(io.err("No windows in the specified direction"))
         }
-        let joinWithTarget = parent.children[ownIndex + direction.focusOffset]
-        let prevBinding = joinWithTarget.unbindFromParent()
-        let newParent = TilingContainer(
-            parent: parent,
-            adaptiveWeight: prevBinding.adaptiveWeight,
-            parent.orientation.opposite,
-            .tiles,
-            index: prevBinding.index,
-        )
-        currentWindow.unbindFromParent()
-
-        joinWithTarget.bind(to: newParent, adaptiveWeight: WEIGHT_AUTO, index: 0)
-        currentWindow.bind(to: newParent, adaptiveWeight: WEIGHT_AUTO, index: direction.isPositive ? 0 : INDEX_BIND_LAST)
-        return .succ
+        TreeStore.shared.refreshFromMutableTree()
+        let state = TreeStore.shared.current
+        guard let windowState = state.windowNode(withWindowId: currentWindow.windowId),
+              let nextState = state.joiningWindowWithSibling(
+                  windowState.id,
+                  direction: direction,
+                  newContainerId: TreeStore.shared.allocateNodeId(),
+              )
+        else { return .fail }
+        return .from(bool: TreeStore.shared.commit(nextState))
     }
 }

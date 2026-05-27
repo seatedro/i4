@@ -47,7 +47,15 @@ struct SwapCommand: Command {
             return .fail
         }
 
-        swapWindows(currentWindow, targetWindow)
+        TreeStore.shared.refreshFromMutableTree()
+        let state = TreeStore.shared.current
+        guard let currentWindowState = state.windowNode(withWindowId: currentWindow.windowId),
+              let targetWindowState = state.windowNode(withWindowId: targetWindow.windowId),
+              let nextState = state.swappingWindows(currentWindowState.id, targetWindowState.id),
+              TreeStore.shared.commit(nextState)
+        else {
+            return .fail
+        }
 
         if args.swapFocus {
             return .from(bool: targetWindow.focusWindow())

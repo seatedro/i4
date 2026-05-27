@@ -23,7 +23,6 @@ struct TreePath: Equatable, Sendable {
 struct TreeCursor: Equatable, Sendable {
     let ref: TreeNodeRef
     let path: TreePath
-    let node: TreeNodeState
 
     var parent: TreeNodeRef? { path.parent }
 }
@@ -48,14 +47,6 @@ enum TreeNodeState: Equatable, Sendable {
     case workspace(WorkspaceState)
     case container(ContainerState)
     case window(WindowState)
-
-    var id: TreeNodeId {
-        switch self {
-            case .workspace(let state): state.id
-            case .container(let state): state.id
-            case .window(let state): state.id
-        }
-    }
 
     var childIds: [TreeNodeId] {
         switch self {
@@ -265,7 +256,7 @@ extension TreeState {
         guard let node = nodes[current] else { return nil }
         let path = path + [current]
         if current == target {
-            return TreeCursor(ref: TreeNodeRef(id: current), path: TreePath(nodeIds: path), node: node)
+            return TreeCursor(ref: TreeNodeRef(id: current), path: TreePath(nodeIds: path))
         }
         for childId in node.childIds {
             if let cursor = cursor(to: target, at: childId, path: path) {

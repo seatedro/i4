@@ -37,6 +37,7 @@ final class MacWindow: Window {
         if try await !restoreClosedWindowsCacheIfNeeded(newlyDetectedWindow: window) {
             try await tryOnWindowDetected(window)
         }
+        TreeStore.shared.refreshFromMutableTree()
         return window
     }
 
@@ -100,6 +101,7 @@ final class MacWindow: Window {
                     break // Don't switch back on popup destruction
             }
         }
+        TreeStore.shared.refreshFromMutableTree()
     }
 
     @MainActor override var title: String { get async throws { try await macApp.getAxTitle(windowId) ?? "" } }

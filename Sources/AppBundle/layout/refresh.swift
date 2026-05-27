@@ -41,11 +41,13 @@ func runHeavyCompleteRefreshSession(
 
                 refreshModel()
                 try await refresh()
+                TreeStore.shared.refreshFromMutableTree()
                 gcMonitors()
 
                 updateTrayText()
                 SecureInputPanel.shared.refresh()
                 try await normalizeLayoutReason()
+                TreeStore.shared.refreshFromMutableTree()
                 if shouldLayoutWorkspaces { try await layoutWorkspaces() }
             }
         }

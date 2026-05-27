@@ -7,7 +7,15 @@ import Common
 /// becomes nil, etc.) which tricks AeroSpace into thinking that all windows were closed.
 /// That's why every time a window dies AeroSpace caches the "entire world" (unless window is already presented in the cache)
 /// so that once the screen is unlocked, AeroSpace could restore windows to where they were
-@MainActor private var closedWindowsCache = FrozenWorld(workspaces: [], monitors: [], windowIds: [])
+@MainActor private var closedWindowsCache = ClosedWindowsCacheSnapshot.empty
+
+private struct ClosedWindowsCacheSnapshot {
+    let tree: TreeState
+    let monitors: [FrozenMonitor]
+    let windowIds: Set<UInt32>
+
+    static let empty = ClosedWindowsCacheSnapshot(tree: .empty, monitors: [], windowIds: [])
+}
 
 struct FrozenMonitor: Sendable {
     let topLeftCorner: CGPoint
@@ -19,32 +27,16 @@ struct FrozenMonitor: Sendable {
     }
 }
 
-struct FrozenWorkspace: Sendable {
-    let name: String
-    let monitor: FrozenMonitor // todo drop this property, once monitor to workspace assignment migrates to TreeNode
-    let rootTilingNode: FrozenContainer
-    let floatingWindows: [FrozenWindow]
-    let macosUnconventionalWindows: [FrozenWindow]
-
-    @MainActor init(_ workspace: Workspace) {
-        name = workspace.name
-        monitor = FrozenMonitor(workspace.workspaceMonitor)
-        rootTilingNode = FrozenContainer(workspace.rootTilingContainer)
-        floatingWindows = workspace.floatingWindows.map(FrozenWindow.init)
-        macosUnconventionalWindows =
-            workspace.macOsNativeHiddenAppsWindowsContainer.children.map { FrozenWindow($0 as! Window) } +
-            workspace.macOsNativeFullscreenWindowsContainer.children.map { FrozenWindow($0 as! Window) }
-    }
-}
-
 @MainActor func cacheClosedWindowIfNeeded() {
     let allWs = Workspace.all
-    let allWindowIds = allWs.flatMap { collectAllWindowIds(workspace: $0) }.toSet()
+    TreeStore.shared.refreshFromMutableTree(workspaces: allWs)
+    let tree = TreeStore.shared.current
+    let allWindowIds = tree.closedWindowsCacheWindowIds
     if allWindowIds.isSubset(of: closedWindowsCache.windowIds) {
         return // already cached
     }
-    closedWindowsCache = FrozenWorld(
-        workspaces: allWs.map { FrozenWorkspace($0) },
+    closedWindowsCache = ClosedWindowsCacheSnapshot(
+        tree: tree,
         monitors: monitors.map(FrozenMonitor.init),
         windowIds: allWindowIds,
     )
@@ -57,21 +49,24 @@ struct FrozenWorkspace: Sendable {
     let monitors = monitors
     let topLeftCornerToMonitor = monitors.grouped { $0.rect.topLeftCorner }
 
-    for frozenWorkspace in closedWindowsCache.workspaces {
-        let workspace = Workspace.get(byName: frozenWorkspace.name)
-        _ = topLeftCornerToMonitor[frozenWorkspace.monitor.topLeftCorner]?
-            .singleOrNil()?
+    let tree = closedWindowsCache.tree
+    for workspaceId in tree.workspaceIdsInOrder {
+        guard case .workspace(let workspaceState) = tree.nodes[workspaceId] else { continue }
+        let workspace = Workspace.get(byName: workspaceState.name)
+        _ = workspaceState.assignedMonitorTopLeft.flatMap { topLeftCornerToMonitor[$0]?.singleOrNil() }?
             .setActiveWorkspace(workspace)
-        for frozenWindow in frozenWorkspace.floatingWindows {
-            MacWindow.get(byId: frozenWindow.id)?.bindAsFloatingWindow(to: workspace)
+        for window in tree.floatingWindows(in: workspaceState) {
+            MacWindow.get(byId: window.windowId)?.bindAsFloatingWindow(to: workspace)
         }
-        for frozenWindow in frozenWorkspace.macosUnconventionalWindows { // Will get fixed by normalizations
-            MacWindow.get(byId: frozenWindow.id)?.bindAsFloatingWindow(to: workspace)
+        for window in tree.macosUnconventionalWindows(in: workspaceState) { // Will get fixed by normalizations
+            MacWindow.get(byId: window.windowId)?.bindAsFloatingWindow(to: workspace)
         }
         let prevRoot = workspace.rootTilingContainer // Save prevRoot into a variable to avoid it being garbage collected earlier than needed
         let potentialOrphans = prevRoot.allLeafWindowsRecursive
         prevRoot.unbindFromParent()
-        restoreTreeRecursive(frozenContainer: frozenWorkspace.rootTilingNode, parent: workspace, index: INDEX_BIND_LAST)
+        if let rootId = tree.rootTilingContainer(for: workspaceId)?.id {
+            restoreTreeRecursive(tree: tree, nodeId: rootId, parent: workspace, index: INDEX_BIND_LAST)
+        }
         for window in (potentialOrphans - workspace.rootTilingContainer.allLeafWindowsRecursive) {
             try await window.relayoutWindow(on: workspace, forceTile: true)
         }
@@ -82,29 +77,39 @@ struct FrozenWorkspace: Sendable {
             .singleOrNil()?
             .setActiveWorkspace(Workspace.get(byName: monitor.visibleWorkspace))
     }
+    TreeStore.shared.refreshFromMutableTree()
     return true
 }
 
 @discardableResult
 @MainActor
-private func restoreTreeRecursive(frozenContainer: FrozenContainer, parent: NonLeafTreeNodeObject, index: Int) -> Bool {
+private func restoreTreeRecursive(tree: TreeState, nodeId: TreeNodeId, parent: NonLeafTreeNodeObject, index: Int) -> Bool {
+    guard case .container(let containerState) = tree.nodes[nodeId],
+          containerState.kind == .tiling,
+          let orientation = containerState.orientation,
+          let layout = containerState.layout
+    else { return false }
+
     let container = TilingContainer(
         parent: parent,
-        adaptiveWeight: frozenContainer.weight,
-        frozenContainer.orientation,
-        frozenContainer.layout,
+        adaptiveWeight: tree.snapshotBindingWeight(of: containerState.id),
+        orientation,
+        layout,
         index: index,
     )
 
-    for (index, child) in frozenContainer.children.enumerated() {
+    for (index, childId) in containerState.childIds.enumerated() {
+        guard let child = tree.nodes[childId] else { return false }
         switch child {
-            case .window(let w):
+            case .window(let windowState):
                 // Stop the loop if can't find the window, because otherwise all the subsequent windows will have incorrect index
-                guard let window = MacWindow.get(byId: w.id) else { return false }
-                window.bind(to: container, adaptiveWeight: w.weight, index: index)
-            case .container(let c):
+                guard let window = MacWindow.get(byId: windowState.windowId) else { return false }
+                window.bind(to: container, adaptiveWeight: tree.snapshotBindingWeight(of: windowState.id), index: index)
+            case .container(let childContainer) where childContainer.kind == .tiling:
                 // There is no reason to continue
-                if !restoreTreeRecursive(frozenContainer: c, parent: container, index: index) { return false }
+                if !restoreTreeRecursive(tree: tree, nodeId: childContainer.id, parent: container, index: index) { return false }
+            case .workspace, .container:
+                return false
         }
     }
     return true
@@ -122,5 +127,35 @@ private func restoreTreeRecursive(frozenContainer: FrozenContainer, parent: NonL
 // That's why we have to reset the cache every time layout changes. The layout can only be changed by running commands
 // and with mouse manipulations
 @MainActor func resetClosedWindowsCache() {
-    closedWindowsCache = FrozenWorld(workspaces: [], monitors: [], windowIds: [])
+    closedWindowsCache = .empty
+}
+
+extension TreeState {
+    fileprivate var closedWindowsCacheWindowIds: Set<UInt32> {
+        workspaceIdsInOrder.flatMap { workspaceId -> [UInt32] in
+            guard case .workspace(let workspace) = nodes[workspaceId] else { return [] }
+            return floatingWindows(in: workspace).map(\.windowId) +
+                macosUnconventionalWindows(in: workspace).map(\.windowId) +
+                (rootTilingContainer(for: workspace.id).map { leafWindowsRecursive(from: $0.id).map(\.windowId) } ?? [])
+        }.toSet()
+    }
+
+    fileprivate func floatingWindows(in workspace: WorkspaceState) -> [WindowState] {
+        workspace.childIds.compactMap { childId in
+            guard case .window(let window) = nodes[childId] else { return nil }
+            return window
+        }
+    }
+
+    fileprivate func macosUnconventionalWindows(in workspace: WorkspaceState) -> [WindowState] {
+        workspace.childIds.flatMap { childId -> [WindowState] in
+            guard case .container(let container) = nodes[childId],
+                  container.kind == .macosHiddenApps || container.kind == .macosFullscreen
+            else { return [] }
+            return container.childIds.compactMap { windowId in
+                guard case .window(let window) = nodes[windowId] else { return nil }
+                return window
+            }
+        }
+    }
 }

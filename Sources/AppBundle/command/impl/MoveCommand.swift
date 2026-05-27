@@ -12,6 +12,28 @@ struct MoveCommand: Command {
             return .fail(io.err(noWindowIsFocused))
         }
         guard let parent = currentWindow.parent else { return .fail }
+        if args.boundaries == .workspace {
+            switch parent.cases {
+                case .tilingContainer:
+                    TreeStore.shared.refreshFromMutableTree()
+                    let state = TreeStore.shared.current
+                    guard let windowState = state.windowNode(withWindowId: currentWindow.windowId),
+                          let nextState = state.movingWindow(
+                              windowState.id,
+                              direction: direction,
+                              boundariesAction: args.boundariesAction,
+                              implicitContainerId: TreeStore.shared.allocateNodeId(),
+                          )
+                    else { return .fail }
+                    return .from(bool: TreeStore.shared.commit(nextState))
+                case .workspace:
+                    return .fail(io.err("moving floating windows isn't yet supported")) // todo
+                case .macosMinimizedWindowsContainer, .macosFullscreenWindowsContainer, .macosHiddenAppsWindowsContainer:
+                    return .fail(io.err(moveOutMacosUnconventionalWindow))
+                case .macosPopupWindowsContainer:
+                    return .fail // Impossible
+            }
+        }
         switch parent.cases {
             case .tilingContainer(let parent):
                 let indexOfCurrent = currentWindow.ownIndex.orDie()

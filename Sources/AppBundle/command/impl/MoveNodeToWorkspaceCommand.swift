@@ -37,7 +37,17 @@ func moveWindowToWorkspace(_ window: Window, _ targetWorkspace: Workspace, _ io:
                 .succ(io.err("Window '\(window.windowId)' already belongs to workspace '\(targetWorkspace.name)'. Tip: use --fail-if-noop to exit with non-zero code"))
         }
     }
-    let targetContainer: NonLeafTreeNodeObject = window.isFloating ? targetWorkspace : targetWorkspace.rootTilingContainer
-    window.bind(to: targetContainer, adaptiveWeight: WEIGHT_AUTO, index: index)
+    if !window.isFloating {
+        _ = targetWorkspace.rootTilingContainer
+    }
+    TreeStore.shared.refreshFromMutableTree()
+    let state = TreeStore.shared.current
+    guard let windowState = state.windowNode(withWindowId: window.windowId),
+          let targetWorkspaceState = state.workspace(named: targetWorkspace.name),
+          let nextState = state.movingWindowToWorkspace(windowState.id, targetWorkspaceId: targetWorkspaceState.id, index: index),
+          TreeStore.shared.commit(nextState)
+    else {
+        return .fail
+    }
     return .from(bool: focusFollowsWindow ? window.focusWindow() : true)
 }

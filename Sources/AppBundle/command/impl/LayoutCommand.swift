@@ -41,12 +41,24 @@ struct LayoutCommand: Command {
                         return .succ // Nothing to do
                     case .workspace(let workspace):
                         window.lastFloatingSize = try await window.getAxSize() ?? window.lastFloatingSize
-                        try await window.relayoutWindow(on: workspace, forceTile: true)
-                        return .succ
+                        _ = workspace.rootTilingContainer
+                        TreeStore.shared.refreshFromMutableTree()
+                        let state = TreeStore.shared.current
+                        guard let windowState = state.windowNode(withWindowId: window.windowId),
+                              let workspaceState = state.workspace(named: workspace.name),
+                              let nextState = state.tilingWindow(windowState.id, workspaceId: workspaceState.id)
+                        else { return .fail }
+                        return .from(bool: TreeStore.shared.commit(nextState))
                 }
             case .floating:
                 let workspace = target.workspace
-                window.bindAsFloatingWindow(to: workspace)
+                TreeStore.shared.refreshFromMutableTree()
+                let state = TreeStore.shared.current
+                guard let windowState = state.windowNode(withWindowId: window.windowId),
+                      let workspaceState = state.workspace(named: workspace.name),
+                      let nextState = state.floatingWindow(windowState.id, workspaceId: workspaceState.id),
+                      TreeStore.shared.commit(nextState)
+                else { return .fail }
                 if let size = window.lastFloatingSize { window.setAxFrame(nil, size) }
                 return .succ
         }
@@ -56,12 +68,18 @@ struct LayoutCommand: Command {
 @MainActor private func changeTilingLayout(_ io: CmdIo, targetLayout: Layout?, targetOrientation: Orientation?, window: Window) -> BinaryExitCode {
     guard let parent = window.parent else { return .fail }
     switch parent.cases {
-        case .tilingContainer(let parent):
-            let targetOrientation = targetOrientation ?? parent.orientation
-            let targetLayout = targetLayout ?? parent.layout
-            parent.layout = targetLayout
-            parent.changeOrientation(targetOrientation)
-            return .succ
+        case .tilingContainer:
+            TreeStore.shared.refreshFromMutableTree()
+            let state = TreeStore.shared.current
+            guard let windowState = state.windowNode(withWindowId: window.windowId),
+                  let nextState = state.changingTilingLayout(
+                      of: windowState.id,
+                      targetLayout: targetLayout,
+                      targetOrientation: targetOrientation,
+                      normalizeOppositeOrientationForNestedContainers: config.enableNormalizationOppositeOrientationForNestedContainers,
+                  )
+            else { return .fail }
+            return .from(bool: TreeStore.shared.commit(nextState))
         case .workspace, .macosMinimizedWindowsContainer, .macosFullscreenWindowsContainer,
              .macosPopupWindowsContainer, .macosHiddenAppsWindowsContainer:
             return .fail(io.err("The window is non-tiling"))

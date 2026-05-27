@@ -5,6 +5,8 @@ source ./script/setup.sh
 build_version=""
 github_repo="seatedro/i4"
 git_remote="origin"
+codesign_identity="-"
+notarytool_profile=""
 cask_git_repo_path=""
 site_git_repo_path=""
 while test $# -gt 0; do
@@ -12,6 +14,8 @@ while test $# -gt 0; do
         --build-version) build_version="$2"; shift 2;;
         --github-repo) github_repo="$2"; shift 2;;
         --git-remote) git_remote="$2"; shift 2;;
+        --codesign-identity) codesign_identity="$2"; shift 2;;
+        --notarytool-profile) notarytool_profile="$2"; shift 2;;
         --cask-git-repo-path) cask_git_repo_path="$2"; shift 2;;
         --site-git-repo-path) site_git_repo_path="$2"; shift 2;;
         *) echo "Unknown option $1"; exit 1;;
@@ -40,14 +44,26 @@ fi
 
 tag="v$build_version"
 zip_path=".release/AeroSpace-v$build_version.zip"
+dmg_path=".release/AeroSpace-v$build_version.dmg"
 release_zip_url="https://github.com/$github_repo/releases/download/$tag/AeroSpace-v$build_version.zip"
 
 ./test.sh
-./build-release.sh --build-version "$build_version"
+build_release_args=(
+    --build-version "$build_version"
+    --codesign-identity "$codesign_identity"
+)
+if test -n "$notarytool_profile"; then
+    build_release_args+=(--notarytool-profile "$notarytool_profile")
+fi
+./build-release.sh "${build_release_args[@]}"
 
 git tag -a "$tag" -m "$tag"
 git push "$git_remote" "$tag"
-gh release create "$tag" "$zip_path" \
+release_assets=("$dmg_path")
+if test -n "$cask_git_repo_path"; then
+    release_assets+=("$zip_path")
+fi
+gh release create "$tag" "${release_assets[@]}" \
     --repo "$github_repo" \
     --title "$tag" \
     --notes "Fork build from $github_repo."

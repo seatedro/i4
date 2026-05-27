@@ -4,13 +4,20 @@ source ./script/setup.sh
 
 build_version="0.0.0-SNAPSHOT"
 codesign_identity="aerospace-codesign-certificate"
+notarytool_profile=""
 while test $# -gt 0; do
     case $1 in
         --build-version) build_version="$2"; shift 2;;
         --codesign-identity) codesign_identity="$2"; shift 2;;
+        --notarytool-profile) notarytool_profile="$2"; shift 2;;
         *) echo "Unknown option $1" > /dev/stderr; exit 1 ;;
     esac
 done
+
+if test -n "$notarytool_profile" && test "$codesign_identity" = "-"; then
+    echo "--notarytool-profile requires a Developer ID signing identity, not ad-hoc signing" > /dev/stderr
+    exit 1
+fi
 
 #############
 ### BUILD ###
@@ -117,6 +124,26 @@ cd .release
     cp -r AeroSpace.app "AeroSpace-v$build_version"
     zip -r "AeroSpace-v$build_version.zip" "AeroSpace-v$build_version"
 cd -
+
+dmg_path=".release/AeroSpace-v$build_version.dmg"
+rm -rf "$dmg_path"
+hdiutil create \
+    -volname "AeroSpace v$build_version" \
+    -srcfolder ".release/AeroSpace-v$build_version" \
+    -ov \
+    -format UDZO \
+    "$dmg_path"
+
+if test "$codesign_identity" != "-"; then
+    codesign -s "$codesign_identity" "$dmg_path"
+    codesign -v "$dmg_path"
+fi
+
+if test -n "$notarytool_profile"; then
+    xcrun notarytool submit "$dmg_path" --keychain-profile "$notarytool_profile" --wait
+    xcrun stapler staple "$dmg_path"
+    xcrun stapler validate "$dmg_path"
+fi
 
 #################
 ### Brew Cask ###

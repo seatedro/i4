@@ -126,15 +126,25 @@ func refreshModel() {
 private func refresh() async throws {
     // Garbage collect terminated apps and windows before working with all windows
     let mapping = try await MacApp.refreshAllAndGetAliveWindowIds(frontmostAppBundleId: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
-    let aliveWindowIds = mapping.values.flatMap(id).toSet()
+    for (app, result) in mapping {
+        for group in result.nativeTabGroups {
+            try await MacWindow.reconcileNativeTabGroup(group, macApp: app)
+        }
+    }
+    let aliveWindowIds = mapping.values.flatMap(\.aliveWindowIds).toSet()
+    let inactiveNativeTabWindowIds = mapping.values.flatMap { $0.nativeTabGroups.flatMap(\.inactiveWindowIds) }.toSet()
 
     for window in MacWindow.allWindows {
         if !aliveWindowIds.contains(window.windowId) {
-            window.garbageCollect(skipClosedWindowsCache: false)
+            if inactiveNativeTabWindowIds.contains(window.windowId) {
+                window.discardNativeTabSidecar()
+            } else {
+                window.garbageCollect(skipClosedWindowsCache: false)
+            }
         }
     }
-    for (app, windowIds) in mapping {
-        for windowId in windowIds {
+    for (app, result) in mapping {
+        for windowId in result.aliveWindowIds {
             try await MacWindow.getOrRegister(windowId: windowId, macApp: app)
         }
     }

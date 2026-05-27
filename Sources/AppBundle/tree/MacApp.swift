@@ -155,6 +155,13 @@ final class MacApp: AbstractApp {
         }
     }
 
+    func nativeTabGroup(containing windowId: UInt32) async throws -> NativeTabWindowGroup? {
+        try await thread?.runInLoop { [windows] job in
+            try job.checkCancellation()
+            return windows.threadGuarded.nativeTabGroups().first { $0.memberWindowIds.contains(windowId) }
+        }
+    }
+
     func getAxRect(_ windowId: UInt32) async throws -> Rect? {
         try await withWindow(windowId) { window, job in
             guard let topLeftCorner = window.get(Ax.topLeftCornerAttr) else { return nil }
@@ -195,9 +202,18 @@ final class MacApp: AbstractApp {
         }
     }
 
+    func nativeTabWindowIdChanged(from oldWindowId: UInt32, to newWindowId: UInt32) {
+        setFrameJobs.removeValue(forKey: oldWindowId)?.cancel()
+        setFrameJobs.removeValue(forKey: newWindowId)?.cancel()
+    }
+
     func dumpWindowAxInfo(windowId: UInt32) async throws -> [String: Json] {
         try await withWindow(windowId) { window, job in
-            dumpAxRecursive(window, .window)
+            var result = dumpAxRecursive(window, .window)
+            if let nativeTabs = window.nativeTabGroupInfo() {
+                result["Aero.NativeTabs"] = nativeTabs.debugJson
+            }
+            return result
         } ?? [:]
     }
 
@@ -226,17 +242,17 @@ final class MacApp: AbstractApp {
     }
 
     @MainActor
-    static func refreshAllAndGetAliveWindowIds(frontmostAppBundleId: String?) async throws -> [MacApp: [UInt32]] {
+    static func refreshAllAndGetAliveWindowIds(frontmostAppBundleId: String?) async throws -> [MacApp: MacAppWindowsRefreshResult] {
         for (_, app) in MacApp.allAppsMap { // gc dead apps
             try checkCancellation()
             if app.nsApp.isTerminated {
                 await app.destroy()
             }
         }
-        return try await withThrowingTaskGroup(of: (pid_t, [UInt32]).self, returning: [MacApp: [UInt32]].self) { group in
+        return try await withThrowingTaskGroup(of: (pid_t, MacAppWindowsRefreshResult).self, returning: [MacApp: MacAppWindowsRefreshResult].self) { group in
             func refreshTheApp(_ nsApp: NSRunningApplication) {
                 group.addTask { @Sendable @MainActor in
-                    guard let app = try await MacApp.getOrRegister(nsApp) else { return (nsApp.processIdentifier, []) }
+                    guard let app = try await MacApp.getOrRegister(nsApp) else { return (nsApp.processIdentifier, .empty) }
                     return (nsApp.processIdentifier, try await app.refreshAndGetAliveWindowIds(frontmostAppBundleId: frontmostAppBundleId))
                 }
             }
@@ -256,23 +272,23 @@ final class MacApp: AbstractApp {
                     refreshTheApp(app.nsApp)
                 }
             }
-            var result: [MacApp: [UInt32]] = [:]
-            for try await (pid, windowIds) in group {
+            var result: [MacApp: MacAppWindowsRefreshResult] = [:]
+            for try await (pid, refreshResult) in group {
                 if let app = MacApp.allAppsMap[pid] {
-                    result[app] = windowIds
+                    result[app] = refreshResult
                 }
             }
             return result
         }
     }
 
-    private func refreshAndGetAliveWindowIds(frontmostAppBundleId: String?) async throws -> [UInt32] {
+    private func refreshAndGetAliveWindowIds(frontmostAppBundleId: String?) async throws -> MacAppWindowsRefreshResult {
         if nsApp.isTerminated {
             await destroy()
-            return []
+            return .empty
         }
-        guard let thread else { return [] }
-        let (alive, dead) = try await thread.runInLoop { [nsApp, windows, axApp] (job) -> ([UInt32], [UInt32]) in
+        guard let thread else { return .empty }
+        let (alive, dead, nativeTabGroups) = try await thread.runInLoop { [nsApp, windows, axApp] (job) -> ([UInt32], [UInt32], [NativeTabWindowGroup]) in
             var alive: [UInt32: AxWindow] = windows.threadGuarded
             var dead = [UInt32: AxWindow]()
             // Second line of defence against lock screen. See the first line of defence: closedWindowsCache
@@ -289,14 +305,18 @@ final class MacApp: AbstractApp {
                 try alive.getOrRegisterAxWindow(windowId: id, window, nsApp, job)
             }
 
+            let nativeTabGroups = alive.nativeTabGroups()
+            let inactiveNativeTabWindowIds = nativeTabGroups.flatMap(\.inactiveWindowIds).toSet()
+            let activeWindowIds = alive.keys.filter { !inactiveNativeTabWindowIds.contains($0) }
+
             windows.threadGuarded = alive
-            return (Array(alive.keys), Array(dead.keys))
+            return (activeWindowIds, Array(dead.keys), nativeTabGroups)
         }
         windowsCount = alive.count
-        for windowId in dead {
+        for windowId in dead + nativeTabGroups.flatMap(\.inactiveWindowIds) {
             setFrameJobs.removeValue(forKey: windowId)?.cancel()
         }
-        return alive
+        return MacAppWindowsRefreshResult(aliveWindowIds: alive, nativeTabGroups: nativeTabGroups)
     }
 
     private func destroy() async {
@@ -327,6 +347,13 @@ final class MacApp: AbstractApp {
             try? body(window.ax, job)
         } ?? .cancelled
     }
+}
+
+struct MacAppWindowsRefreshResult: Sendable {
+    let aliveWindowIds: [UInt32]
+    let nativeTabGroups: [NativeTabWindowGroup]
+
+    static let empty = MacAppWindowsRefreshResult(aliveWindowIds: [], nativeTabGroups: [])
 }
 
 private final class AxWindow {
@@ -368,6 +395,17 @@ extension [UInt32: AxWindow] {
         } else {
             return nil
         }
+    }
+
+    fileprivate func nativeTabGroups() -> [NativeTabWindowGroup] {
+        let candidates = values.map {
+            NativeTabWindowCandidate(
+                windowId: $0.windowId,
+                title: $0.ax.get(Ax.titleAttr) ?? "",
+                tabGroup: $0.ax.nativeTabGroupInfo(),
+            )
+        }
+        return resolveNativeTabWindowGroups(from: candidates)
     }
 }
 

@@ -15,9 +15,29 @@ final class MacWindow: Window {
     @MainActor static var allWindows: [MacWindow] { Array(allWindowsMap.values) }
 
     @MainActor
+    static func reconcileNativeTabGroup(_ group: NativeTabWindowGroup, macApp: MacApp) async throws {
+        let managedMembers = group.memberWindowIds.compactMap { allWindowsMap[$0] }
+        guard let survivor = allWindowsMap[group.activeWindowId] ?? managedMembers.first else { return }
+
+        for window in managedMembers where window !== survivor {
+            window.discardNativeTabSidecar()
+        }
+
+        if survivor.windowId != group.activeWindowId {
+            try await survivor.adoptNativeTabWindowId(group.activeWindowId, macApp: macApp)
+        }
+    }
+
+    @MainActor
     @discardableResult
     static func getOrRegister(windowId: UInt32, macApp: MacApp) async throws -> MacWindow {
         if let existing = allWindowsMap[windowId] { return existing }
+        if let group = try await macApp.nativeTabGroup(containing: windowId),
+           group.memberWindowIds.contains(where: { allWindowsMap[$0] != nil })
+        {
+            try await reconcileNativeTabGroup(group, macApp: macApp)
+            if let existing = allWindowsMap[group.activeWindowId] { return existing }
+        }
         let rect = try await macApp.getAxRect(windowId)
         let data = try await unbindAndGetBindingDataForNewWindow(
             windowId,
@@ -101,6 +121,30 @@ final class MacWindow: Window {
                     break // Don't switch back on popup destruction
             }
         }
+        TreeStore.shared.refreshFromMutableTree()
+    }
+
+    @MainActor
+    func discardNativeTabSidecar() {
+        guard MacWindow.allWindowsMap.removeValue(forKey: windowId) != nil else { return }
+        if parent != nil {
+            _ = unbindFromParent()
+        }
+        TreeStore.shared.refreshFromMutableTree()
+    }
+
+    @MainActor
+    private func adoptNativeTabWindowId(_ newWindowId: UInt32, macApp: MacApp) async throws {
+        check(self.macApp === macApp)
+        let oldWindowId = windowId
+        MacWindow.allWindowsMap.removeValue(forKey: oldWindowId)
+        macApp.nativeTabWindowIdChanged(from: oldWindowId, to: newWindowId)
+        windowId = newWindowId
+        MacWindow.allWindowsMap[newWindowId] = self
+        if let rect = try await macApp.getAxRect(newWindowId) {
+            lastFloatingSize = rect.size
+        }
+        try await debugWindowsIfRecording(self)
         TreeStore.shared.refreshFromMutableTree()
     }
 

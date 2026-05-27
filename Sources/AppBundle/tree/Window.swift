@@ -2,7 +2,7 @@ import AppKit
 import Common
 
 open class Window: TreeNode, Hashable {
-    let windowId: UInt32
+    var windowId: UInt32
     let app: any AbstractApp
     var lastFloatingSize: CGSize?
     var isFullscreen: Bool = false

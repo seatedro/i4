@@ -60,7 +60,18 @@ cp -r .build/apple/Products/Release/aerospace .release
 ### SIGN CLI ###
 ################
 
-codesign -s "$codesign_identity" .release/aerospace
+codesign_args=(--force --sign "$codesign_identity")
+if test "$codesign_identity" != "-"; then
+    codesign_args+=(--timestamp --options runtime)
+fi
+
+codesign "${codesign_args[@]}" .release/aerospace
+
+################
+### SIGN APP ###
+################
+
+codesign "${codesign_args[@]}" --entitlements resources/AeroSpace.entitlements .release/AeroSpace.app
 
 ################
 ### VALIDATE ###
@@ -135,7 +146,7 @@ hdiutil create \
     "$dmg_path"
 
 if test "$codesign_identity" != "-"; then
-    codesign -s "$codesign_identity" "$dmg_path"
+    codesign --force --timestamp --sign "$codesign_identity" "$dmg_path"
     codesign -v "$dmg_path"
 fi
 

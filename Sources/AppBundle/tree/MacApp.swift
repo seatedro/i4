@@ -26,6 +26,8 @@ final class MacApp: AbstractApp {
     //      and make deinitialization automatic in deinit
     @MainActor static var allAppsMap: [pid_t: MacApp] = [:]
     @MainActor private static var wipPids: [pid_t: AwaitableOneTimeBroadcastLatch] = [:]
+    @MainActor private static var failedRegistrationRetryAfter: [pid_t: Date] = [:]
+    private static let failedRegistrationRetryDelay: TimeInterval = 10
 
     private init(_ nsApp: NSRunningApplication, _ axApp: AXUIElement, _ axSubscriptions: [AxSubscription], _ thread: Thread) {
         self.nsApp = nsApp
@@ -47,13 +49,21 @@ final class MacApp: AbstractApp {
         let pid = nsApp.processIdentifier
         // AX requests crash if you send them to yourself
         if pid == myPid { return nil }
+        if nsApp.isTerminated {
+            failedRegistrationRetryAfter[pid] = nil
+            return nil
+        }
 
         while true {
             if let existing = allAppsMap[pid] { return existing }
             try checkCancellation()
+            if let retryAfter = failedRegistrationRetryAfter[pid] {
+                if retryAfter > .now { return nil }
+                failedRegistrationRetryAfter[pid] = nil
+            }
             if let wip = wipPids[pid] {
                 try await wip.await()
-                continue
+                return allAppsMap[pid]
             }
             let wip = AwaitableOneTimeBroadcastLatch()
             wipPids[pid] = wip
@@ -69,7 +79,13 @@ final class MacApp: AbstractApp {
                     let isGood = !subscriptions.isEmpty
                     let app = isGood ? MacApp(nsApp, axApp, subscriptions, Thread.current) : nil
                     Task { @MainActor in
-                        allAppsMap[pid] = app
+                        if let app {
+                            allAppsMap[pid] = app
+                            failedRegistrationRetryAfter[pid] = nil
+                        } else {
+                            allAppsMap[pid] = nil
+                            failedRegistrationRetryAfter[pid] = Date.now.addingTimeInterval(failedRegistrationRetryDelay)
+                        }
                         await wip.signalToAll()
                         wipPids[pid] = nil
                     }
@@ -243,6 +259,9 @@ final class MacApp: AbstractApp {
 
     @MainActor
     static func refreshAllAndGetAliveWindowIds(frontmostAppBundleId: String?) async throws -> [MacApp: MacAppWindowsRefreshResult] {
+        let runningApplications = NSWorkspace.shared.runningApplications
+        let runningPids = runningApplications.map(\.processIdentifier).toSet()
+        failedRegistrationRetryAfter = failedRegistrationRetryAfter.filter { runningPids.contains($0.key) && $0.value > .now }
         for (_, app) in MacApp.allAppsMap { // gc dead apps
             try checkCancellation()
             if app.nsApp.isTerminated {
@@ -257,7 +276,7 @@ final class MacApp: AbstractApp {
                 }
             }
             // Register new apps
-            for nsApp in NSWorkspace.shared.runningApplications {
+            for nsApp in runningApplications {
                 try checkCancellation()
                 if nsApp.activationPolicy == .regular {
                     refreshTheApp(nsApp)
